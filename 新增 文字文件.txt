@@ -1,0 +1,396 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>聖誕踩地雷</title>
+    <!-- Tailwind CSS CDN -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <!-- Inter Font -->
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;600;800&display=swap');
+        body {
+            font-family: 'Inter', sans-serif;
+            background-color: #f0f4f8; /* Light icy blue/snow background */
+        }
+        .cell {
+            width: 32px;
+            height: 32px;
+            line-height: 32px;
+            text-align: center;
+            font-weight: bold;
+            cursor: pointer;
+            user-select: none;
+            border: 1px solid rgba(255, 255, 255, 0.5);
+            transition: background-color 0.1s;
+            box-shadow: 1px 1px 2px rgba(0, 0, 0, 0.2);
+        }
+        .cell-covered {
+            background-color: #60a5fa; /* Blue for covered (icy look) */
+            background-image: linear-gradient(135deg, #10b981 10%, #34d399 90%); /* Green gradient */
+            box-shadow: inset -2px -2px 3px rgba(0, 0, 0, 0.3), inset 2px 2px 3px rgba(255, 255, 255, 0.5);
+            color: transparent; /* Hide initial content */
+        }
+        .cell-revealed {
+            background-color: #f9fafb; /* Snowy white */
+            box-shadow: inset 1px 1px 2px rgba(0, 0, 0, 0.1);
+        }
+        /* Color mapping for numbers based on Christmas theme */
+        .c1 { color: #1e40af; } /* Dark Blue */
+        .c2 { color: #15803d; } /* Dark Green */
+        .c3 { color: #b91c1c; } /* Deep Red */
+        .c4 { color: #6d28d9; } /* Violet/Purple */
+        .c5 { color: #9a3412; } /* Brown/Maroon */
+        .c6 { color: #0f766e; } /* Teal */
+        .c7 { color: #374151; } /* Dark Grey */
+        .c8 { color: #1f2937; } /* Black */
+
+        .mine {
+            color: #ef4444; /* Bright Red for explosion */
+            font-size: 1.25rem;
+        }
+        .flag {
+            color: #facc15; /* Gold for star on tree/flag */
+            font-size: 1.1rem;
+        }
+    </style>
+</head>
+<body class="p-4 sm:p-8 flex flex-col items-center justify-center min-h-screen">
+
+    <div class="max-w-xl w-full bg-white p-6 rounded-xl shadow-2xl border-4 border-red-500/80">
+        <h1 class="text-3xl font-extrabold text-center mb-4 text-red-700">
+            🎄 聖誕快樂踩地雷 🎁
+        </h1>
+        <p class="text-center text-sm mb-4 text-gray-600">
+            點擊 (左鍵) 清除雪地，右鍵標記聖誕樹 (地雷)
+        </p>
+
+        <div id="game-info" class="flex justify-between mb-4 text-lg font-semibold text-green-700">
+            <span id="flag-count">🎄 剩餘地雷: 15</span>
+            <span id="status-message" class="text-red-600 font-bold">準備開始</span>
+        </div>
+
+        <div id="game-board" class="shadow-inner rounded-lg overflow-hidden border-4 border-green-700/80 mx-auto">
+            <!-- Game cells will be injected here -->
+        </div>
+
+        <div id="message-container" class="mt-6 p-4 bg-yellow-100 border-l-4 border-yellow-500 rounded-lg hidden">
+            <p id="win-message" class="text-center text-xl font-bold text-yellow-800"></p>
+        </div>
+
+        <div class="mt-6 flex justify-center space-x-4">
+            <button id="restart-button" class="px-6 py-2 bg-red-600 text-white font-bold rounded-full hover:bg-red-700 shadow-lg transition duration-150">
+                重新開始 (R)
+            </button>
+        </div>
+    </div>
+
+    <!-- Firebase SDK Imports for the environment -->
+    <script type="module">
+        import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
+        import { getAuth, signInAnonymously, signInWithCustomToken } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
+        import { getFirestore } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
+        
+        // Global variables for Firebase access
+        const appId = typeof __app_id !== 'undefined' ? __app_id : 'default-app-id';
+        const firebaseConfig = typeof __firebase_config !== 'undefined' ? JSON.parse(__firebase_config) : {};
+        const initialAuthToken = typeof __initial_auth_token !== 'undefined' ? __initial_auth_token : null;
+
+        let app, db, auth;
+
+        // Initialize Firebase and authenticate
+        const initFirebase = async () => {
+            if (Object.keys(firebaseConfig).length === 0) {
+                console.warn("Firebase configuration is missing or empty. Skipping Firebase initialization.");
+                return;
+            }
+
+            try {
+                app = initializeApp(firebaseConfig);
+                db = getFirestore(app);
+                auth = getAuth(app);
+                
+                if (initialAuthToken) {
+                    await signInWithCustomToken(auth, initialAuthToken);
+                    console.log("Firebase initialized and signed in with custom token.");
+                } else {
+                    await signInAnonymously(auth);
+                    console.log("Firebase initialized and signed in anonymously.");
+                }
+            } catch (error) {
+                console.error("Error during Firebase initialization or sign-in:", error);
+            }
+        };
+
+        initFirebase();
+    </script>
+
+    <script>
+        // --- Minesweeper Game Logic ---
+        const BOARD_SIZE = 10;
+        const NUM_MINES = 15;
+        const MINE = 9; // Internal value for mine
+        const FLAGGED = 10; // State value for flagged
+
+        let board = []; // Stores mine locations and adjacent counts (0-8, 9 for mine)
+        let state = []; // Stores cell state (0: covered, 1: revealed, 2: flagged)
+        let gameOver = false;
+        let flagsPlaced = 0;
+        let cellsToReveal = BOARD_SIZE * BOARD_SIZE - NUM_MINES;
+
+        const boardElement = document.getElementById('game-board');
+        const flagCountElement = document.getElementById('flag-count');
+        const statusMessageElement = document.getElementById('status-message');
+        const winMessageElement = document.getElementById('win-message');
+        const messageContainer = document.getElementById('message-container');
+        const restartButton = document.getElementById('restart-button');
+
+        // Helper to get coordinates
+        const getCoords = (id) => {
+            const [r, c] = id.split('-').map(Number);
+            return { r, c };
+        };
+
+        // Initialize the board with empty cells
+        function initializeBoard() {
+            board = Array(BOARD_SIZE).fill(0).map(() => Array(BOARD_SIZE).fill(0));
+            state = Array(BOARD_SIZE).fill(0).map(() => Array(BOARD_SIZE).fill(0));
+            gameOver = false;
+            flagsPlaced = 0;
+            cellsToReveal = BOARD_SIZE * BOARD_SIZE - NUM_MINES;
+            updateFlagCount();
+            statusMessageElement.textContent = '準備開始';
+            statusMessageElement.classList.remove('text-red-700', 'text-green-700');
+            statusMessageElement.classList.add('text-red-600');
+            messageContainer.classList.add('hidden');
+        }
+
+        // Place mines randomly
+        function placeMines() {
+            let minesPlaced = 0;
+            while (minesPlaced < NUM_MINES) {
+                const r = Math.floor(Math.random() * BOARD_SIZE);
+                const c = Math.floor(Math.random() * BOARD_SIZE);
+                if (board[r][c] !== MINE) {
+                    board[r][c] = MINE;
+                    minesPlaced++;
+                }
+            }
+        }
+
+        // Calculate adjacent mine counts
+        function calculateCounts() {
+            for (let r = 0; r < BOARD_SIZE; r++) {
+                for (let c = 0; c < BOARD_SIZE; c++) {
+                    if (board[r][c] === MINE) continue;
+                    
+                    let count = 0;
+                    for (let dr = -1; dr <= 1; dr++) {
+                        for (let dc = -1; dc <= 1; dc++) {
+                            if (dr === 0 && dc === 0) continue;
+                            const nr = r + dr;
+                            const nc = c + dc;
+                            
+                            if (nr >= 0 && nr < BOARD_SIZE && nc >= 0 && nc < BOARD_SIZE) {
+                                if (board[nr][nc] === MINE) {
+                                    count++;
+                                }
+                            }
+                        }
+                    }
+                    board[r][c] = count;
+                }
+            }
+        }
+
+        // Render the board visually
+        function renderBoard() {
+            boardElement.innerHTML = '';
+            boardElement.style.gridTemplateColumns = `repeat(${BOARD_SIZE}, 1fr)`;
+            boardElement.style.display = 'grid';
+
+            for (let r = 0; r < BOARD_SIZE; r++) {
+                for (let c = 0; c < BOARD_SIZE; c++) {
+                    const cell = document.createElement('div');
+                    cell.id = `${r}-${c}`;
+                    cell.classList.add('cell');
+                    cell.dataset.row = r;
+                    cell.dataset.col = c;
+                    
+                    // Initial covered state
+                    cell.classList.add('cell-covered');
+                    
+                    cell.addEventListener('click', handleLeftClick);
+                    // Prevent context menu to allow right-click flagging
+                    cell.addEventListener('contextmenu', (e) => {
+                        e.preventDefault();
+                        handleRightClick(e);
+                    });
+                    
+                    boardElement.appendChild(cell);
+                }
+            }
+        }
+
+        // Update the visual representation of a single cell
+        function updateCellVisual(r, c) {
+            const cell = document.getElementById(`${r}-${c}`);
+            if (!cell) return;
+            
+            cell.textContent = '';
+            cell.classList.remove('cell-covered', 'flag');
+
+            if (state[r][c] === 2) { // Flagged
+                cell.textContent = '🎄'; // Christmas Tree Flag
+                cell.classList.add('flag');
+                cell.classList.add('cell-covered'); // Keep the covered look
+            } else if (state[r][c] === 1) { // Revealed
+                cell.classList.add('cell-revealed');
+                cell.classList.remove('cell-covered');
+                cell.style.boxShadow = 'none';
+
+                const content = board[r][c];
+                if (content === MINE) {
+                    cell.textContent = '🎁'; // Christmas Gift Bomb
+                    cell.classList.add('mine');
+                    cell.style.backgroundColor = '#fca5a5'; // Light red explosion
+                } else if (content > 0) {
+                    cell.textContent = content;
+                    cell.classList.add(`c${content}`);
+                }
+                cell.removeEventListener('click', handleLeftClick);
+                cell.removeEventListener('contextmenu', handleRightClick);
+            } else { // Covered (0)
+                cell.classList.add('cell-covered');
+            }
+        }
+
+        // Recursive function to reveal empty cells
+        function revealCell(r, c) {
+            if (r < 0 || r >= BOARD_SIZE || c < 0 || c >= BOARD_SIZE) return;
+            if (state[r][c] === 1 || state[r][c] === 2) return; // Already revealed or flagged
+
+            state[r][c] = 1; // Mark as revealed
+            cellsToReveal--;
+            updateCellVisual(r, c);
+
+            // If it's an empty cell (0), recursively reveal neighbors
+            if (board[r][c] === 0) {
+                for (let dr = -1; dr <= 1; dr++) {
+                    for (let dc = -1; dc <= 1; dc++) {
+                        // Exclude the current cell
+                        if (dr !== 0 || dc !== 0) {
+                            revealCell(r + dr, c + dc);
+                        }
+                    }
+                }
+            }
+        }
+
+        // Handle left click (Reveal)
+        function handleLeftClick(e) {
+            if (gameOver) return;
+            const { r, c } = getCoords(e.target.id);
+            
+            // Cannot reveal a flagged cell
+            if (state[r][c] === 2) return;
+
+            if (board[r][c] === MINE) {
+                // Game Over
+                state[r][c] = 1; // Reveal the mine that was clicked
+                updateCellVisual(r, c);
+                endGame(false);
+            } else {
+                // Reveal cell (and possibly neighbors)
+                revealCell(r, c);
+                checkWin();
+            }
+        }
+
+        // Handle right click (Flag)
+        function handleRightClick(e) {
+            if (gameOver) return;
+            const { r, c } = getCoords(e.target.id);
+
+            // Only allow flagging if covered
+            if (state[r][c] === 0) {
+                state[r][c] = 2; // Flag
+                flagsPlaced++;
+            } else if (state[r][c] === 2) {
+                state[r][c] = 0; // Unflag
+                flagsPlaced--;
+            }
+            
+            updateFlagCount();
+            updateCellVisual(r, c);
+        }
+
+        // Update the remaining flag counter
+        function updateFlagCount() {
+            flagCountElement.textContent = `🎄 剩餘地雷: ${NUM_MINES - flagsPlaced}`;
+        }
+
+        // Check for win condition
+        function checkWin() {
+            if (cellsToReveal === 0) {
+                endGame(true);
+            }
+        }
+
+        // Game end logic
+        function endGame(won) {
+            gameOver = true;
+            
+            // Reveal all cells
+            for (let r = 0; r < BOARD_SIZE; r++) {
+                for (let c = 0; c < BOARD_SIZE; c++) {
+                    if (state[r][c] !== 1) {
+                        state[r][c] = 1; // Force reveal
+                    }
+                    updateCellVisual(r, c);
+                }
+            }
+            
+            // Display message
+            if (won) {
+                statusMessageElement.textContent = '獲勝！';
+                statusMessageElement.classList.remove('text-red-600');
+                statusMessageElement.classList.add('text-green-700');
+                
+                // Winning message in Chinese (Traditional)
+                winMessageElement.innerHTML = `
+                    🎉 恭喜你！你成功避開了所有的聖誕「驚喜」炸彈！<br>
+                    今年的禮物一定超讚！你真是聖誕節的守護者！ 🎅
+                `;
+                messageContainer.classList.remove('hidden');
+            } else {
+                statusMessageElement.textContent = '地雷爆炸了！';
+                statusMessageElement.classList.remove('text-green-700');
+                statusMessageElement.classList.add('text-red-700');
+            }
+        }
+
+        // Main game setup function
+        function setupGame() {
+            initializeBoard();
+            placeMines();
+            calculateCounts();
+            renderBoard();
+        }
+
+        // Event listener for restart button
+        restartButton.addEventListener('click', setupGame);
+        
+        // Keyboard shortcut for restart (R key)
+        document.addEventListener('keydown', (e) => {
+            if (e.key === 'r' || e.key === 'R') {
+                setupGame();
+            }
+        });
+
+        // Initialize the game when the window loads
+        window.onload = setupGame;
+
+    </script>
+</body>
+</html>
